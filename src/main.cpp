@@ -4,63 +4,98 @@
 #include <math.h>
 #include "clock.h"
 
-#define LEDUHR_SEC_LED0 A1
-#define LEDUHR_MIN_LED0 A2
-#define LEDUHR_HOU_LED0 A3
-#define LEDUHR_SEC_DAT  2
-#define LEDUHR_SEC_CLK  4
-#define LEDUHR_SEC_RST  5
-#define LEDUHR_MIN_DAT  6
-#define LEDUHR_MIN_CLK  7
-#define LEDUHR_MIN_RST  8
-#define LEDUHR_HOU_DAT  9
-#define LEDUHR_HOU_CLK  10
-#define LEDUHR_HOU_RST  11
+#define DDR_LED0        DDRC
+#define PORT_LED0       PORTC
+#define PIN_LED0_S      PC1
+#define PIN_LED0_M      PC2
+#define PIN_LED0_H      PC3
+#define DDR_CLK_DAT     DDRB
+#define PORT_CLK_DAT    PORTB
+#define PIN_CLK_MS      PB0
+#define PIN_CLK_H       PB1
+#define PIN_DAT_S       PB2
+#define PIN_DAT_M       PB3
+#define PIN_DAT_H       PB4
+#define DDR_RST         DDRD
+#define PORT_RST        PORTD
+#define PIN_RST         PD2
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 Clock clock(3, 58, 0);
 
-uint8_t bufhours[2];
-uint8_t bufminutes[8];
-uint8_t bufseconds[8];
+uint8_t bufH[2];
+uint8_t bufM[8];
+uint8_t bufS[8];
 
-volatile uint8_t pwmsync = 0;
+uint8_t outbuf[60];
 
-void sendBufferToLeduhr(
-  uint8_t *buf,
-  uint8_t len,
-  uint8_t datpin,
-  uint8_t clkpin,
-  uint8_t rstpin,
-  uint8_t led0pin
-) {
+volatile uint8_t outBufReady = 0;
 
-  digitalWrite(clkpin, LOW);
+void leduhrInitHardware(void) {
+  DDR_LED0 |=
+    (1 << PIN_LED0_H) |
+    (1 << PIN_LED0_M) |
+    (1 << PIN_LED0_S);
+  DDR_CLK_DAT |=
+    (1 << PIN_CLK_MS) | 
+    (1 << PIN_CLK_H) | 
+    (1 << PIN_DAT_S) | 
+    (1 << PIN_DAT_M) | 
+    (1 << PIN_DAT_H);
+  DDR_RST |= (1 << PIN_RST);
+}
+
+void leduhrPrepareOutBuf(void) {
+  if (outBufReady) return; // last buffer isn't send
   
-  pwmsync = 1;
-  while (pwmsync) { delayMicroseconds(10); } // wait for pwmcycle to finish
+  uint8_t *pbuf = &outbuf[59];
 
-  digitalWrite(rstpin, HIGH);
-  digitalWrite(rstpin, LOW);
-
-  for (uint8_t i = (len-1); i > 0; i--) { // Die erste LED hängt nicht am Schieberegister
-    uint8_t state = (buf[i/8] >> (i%8)) & 0x01;
-    digitalWrite(datpin, state);
-    digitalWrite(clkpin, HIGH);
-    digitalWrite(clkpin, LOW);
+  for (uint8_t i = 1; i < 60; i++) {
+    if (i < 12) {
+      *pbuf = ((bufH[i/8] >> (i%8)) & 0x01) << PIN_DAT_H;
+    } else {
+      *pbuf = (1 << PIN_CLK_H);
+    }
+    *pbuf |= (((bufS[i/8] >> (i%8)) & 0x01) << PIN_DAT_S) |
+            (((bufM[i/8] >> (i%8)) & 0x01) << PIN_DAT_M);
+    pbuf--;
   }
-  digitalWrite(led0pin, buf[0] & 0x01);
+  // first led is connected directly, prepare output register
+  *pbuf = ((bufH[0] & 0x01) << PIN_LED0_H) |
+          ((bufM[0] & 0x01) << PIN_LED0_M) |
+          ((bufS[0] & 0x01) << PIN_LED0_S);
+
+  outBufReady = 1;  // Signal to PWM, so it can output at next high to low transition
 }
 
-void leduhrUpdateSec() {
-  sendBufferToLeduhr(bufseconds, 60, LEDUHR_SEC_DAT, LEDUHR_SEC_CLK, LEDUHR_SEC_RST, LEDUHR_SEC_LED0);
+void leduhrSendOutBuf(void) {
+  uint8_t mask;
+  uint8_t *pdat = outbuf;
+
+  PORT_RST |= (1 << PIN_RST);
+  PORT_RST &= ~(1 << PIN_RST);
+  
+   // first Led is connected directly to controller pin
+  mask = (1 << PIN_LED0_H)|(1 << PIN_LED0_M)|(1 << PIN_LED0_S);
+  PORT_LED0 = (PORT_LED0 & ~mask) | *pdat;
+  pdat++;
+
+  // all others via shift register
+  mask =  (1 << PIN_DAT_H) |
+          (1 << PIN_DAT_M) |
+          (1 << PIN_DAT_S) |
+          (1 << PIN_CLK_MS) |
+          (1 << PIN_CLK_H);
+  for (uint8_t i = 1; i < 60; i++) {
+    PORT_CLK_DAT = (PORT_CLK_DAT & ~mask) | *pdat;
+    PORT_CLK_DAT |= (1 << PIN_CLK_MS) | (1 << PIN_CLK_H);
+    pdat++;
+  }
+  PORT_CLK_DAT &= ~((1 << PIN_CLK_MS) | (1 << PIN_CLK_H));
 }
 
-void leduhrUpdateMin() {
-  sendBufferToLeduhr(bufminutes, 60, LEDUHR_MIN_DAT, LEDUHR_MIN_CLK, LEDUHR_MIN_RST, LEDUHR_MIN_LED0);
-}
-void leduhrUpdateHou() {
-  sendBufferToLeduhr(bufhours, 12, LEDUHR_HOU_DAT, LEDUHR_HOU_CLK, LEDUHR_HOU_RST, LEDUHR_HOU_LED0);
+void leduhrUpdate() {
+  leduhrPrepareOutBuf();
 }
 
 
@@ -88,15 +123,15 @@ void printBuffer(
 }
 
 void printHourBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 22, 12, bufhours);
+  printBuffer(disp, x, y, 22, 12, bufH);
 }
 
 void printMinuteBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 26, 60, bufminutes);
+  printBuffer(disp, x, y, 26, 60, bufM);
 }
 
 void printSecondBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 30, 60, bufseconds);
+  printBuffer(disp, x, y, 30, 60, bufS);
 }
 
 void oledclockUpdate(void) {
@@ -109,7 +144,10 @@ void oledclockUpdate(void) {
 }
 
 ISR(TIMER2_OVF_vect) {
-  pwmsync = 0;
+  if (outBufReady) {
+    leduhrSendOutBuf();
+    outBufReady = 0;
+  }
 }
 
 void setup() {
@@ -117,27 +155,15 @@ void setup() {
   DDRD |= (1 << DDD3);
   
   OCR2A = 100;
-  OCR2B = 100 - 2; // Helligkeit
+  OCR2B = 100 - 4; // Helligkeit
 
   TCCR2A = (1 << COM2B1) | (0 << COM2B0) | (1 << WGM21) | (1 << WGM20);
-  TCCR2B = (1 << WGM22) | (1 << CS22) | (1 << CS21);
+  TCCR2B = (1 << WGM22) | (1 << CS21) | (1 << CS20);
   TIMSK2 = (1 << TOIE2);
   sei();
-  
 
   /* Setup for real Leduhr output */
-  pinMode(LEDUHR_SEC_LED0, OUTPUT);
-  pinMode(LEDUHR_MIN_LED0, OUTPUT);
-  pinMode(LEDUHR_HOU_LED0, OUTPUT);
-  pinMode(LEDUHR_SEC_DAT, OUTPUT);
-  pinMode(LEDUHR_SEC_CLK, OUTPUT);
-  pinMode(LEDUHR_SEC_RST, OUTPUT);
-  pinMode(LEDUHR_MIN_DAT, OUTPUT);
-  pinMode(LEDUHR_MIN_CLK, OUTPUT);
-  pinMode(LEDUHR_MIN_RST, OUTPUT);
-  pinMode(LEDUHR_HOU_DAT, OUTPUT);
-  pinMode(LEDUHR_HOU_CLK, OUTPUT);
-  pinMode(LEDUHR_HOU_RST, OUTPUT);
+  leduhrInitHardware();
 
   /* Setup for OLED output */
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -145,20 +171,20 @@ void setup() {
   display.display();
 }
 
-void clearHouBuf(void) {
-  bufhours[0] = 0;
-  bufhours[1] = 0;
+void clearBufH(void) {
+  bufH[0] = 0;
+  bufH[1] = 0;
 }
 
-void clearMinBuf(void) {
+void clearBufM(void) {
   for (uint8_t i = 0; i < 8; i++) {
-    bufminutes[i] = 0;
+    bufM[i] = 0;
   }
 }
 
-void clearSecBuf(void) {
+void clearBufS(void) {
   for (uint8_t i = 0; i < 8; i++) {
-    bufseconds[i] = 0;
+    bufS[i] = 0;
   }
 }
 
@@ -182,9 +208,9 @@ void loop() {
     for (uint8_t i = 0; i <= 60; i++) {
       uint32_t sec = second + i;
       while (sec > 59) sec -= 60;
-      clearSecBuf();
-      bufseconds[sec/8] = 1 << sec%8;
-      leduhrUpdateSec();
+      clearBufS();
+      bufS[sec/8] = 1 << sec%8;
+      leduhrUpdate();
       delay(5);
     }
   }
@@ -194,18 +220,18 @@ void loop() {
     for (uint8_t i = 0; i <= 60; i++) {
       uint32_t min = minute + i;
       while (min > 59) min -= 60;
-      clearMinBuf();
-      bufminutes[min/8] = 1 << min%8;
-      leduhrUpdateMin();
+      clearBufM();
+      bufM[min/8] = 1 << min%8;
+      leduhrUpdate();
       delay(5);
     }
   }
 
   /* Update hours */
   if (lastHour != hour) {
-    clearHouBuf();
-    bufhours[hour/8] = 1 << hour%8;
-    leduhrUpdateHou();
+    clearBufH();
+    bufH[hour/8] = 1 << hour%8;
+    leduhrUpdate();
   }
   
   lastSecond = second;
