@@ -7,16 +7,16 @@
 #define PIN_LED0_S      PC1
 #define PIN_LED0_M      PC2
 #define PIN_LED0_H      PC3
-#define DDR_CLK_DAT     DDRB
-#define PORT_CLK_DAT    PORTB
-#define PIN_CLK_MS      PB0
-#define PIN_CLK_H       PB1
-#define PIN_DAT_S       PB2
-#define PIN_DAT_M       PB3
-#define PIN_DAT_H       PB4
-#define DDR_RST         DDRD
-#define PORT_RST        PORTD
-#define PIN_RST         PD2
+#define DDR_CLK_DAT     DDRD
+#define PORT_CLK_DAT    PORTD
+#define PIN_CLK_MS      PD2
+#define PIN_CLK_H       PD4
+#define PIN_DAT_S       PD5
+#define PIN_DAT_M       PD6
+#define PIN_DAT_H       PD7
+#define DDR_RST         DDRB
+#define PORT_RST        PORTB
+#define PIN_RST         PB0
 
 Clock clock(3, 59, 55);
 
