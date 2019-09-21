@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <math.h>
 #include "clock.h"
 
@@ -20,8 +18,7 @@
 #define PORT_RST        PORTD
 #define PIN_RST         PD2
 
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
-Clock clock(3, 58, 0);
+Clock clock(3, 59, 55);
 
 uint8_t bufH[2];
 uint8_t bufM[8];
@@ -98,51 +95,6 @@ void leduhrUpdate() {
   leduhrPrepareOutBuf();
 }
 
-
-void printBuffer(
-  Adafruit_SSD1306 *disp,
-  uint8_t x,
-  uint8_t y,
-  uint8_t r,
-  uint8_t len,
-  uint8_t *buf
-) {
-  float rot = 0;
-  for (uint8_t i = 0; i < len; i++) {
-    uint8_t x1, y1;
-    x1 = x + r * sin(rot);
-    y1 = y - r * cos(rot);
-    
-    if ( ( buf[i/8] >> (i%8) ) & 0x01 ) {
-      disp->drawCircle(x1, y1, 1, WHITE);
-    }
-    disp->drawPixel(x1, y1, WHITE);
-    rot += 2.0 * PI / len;
-  }
-
-}
-
-void printHourBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 22, 12, bufH);
-}
-
-void printMinuteBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 26, 60, bufM);
-}
-
-void printSecondBuffer( Adafruit_SSD1306 *disp, uint8_t x, uint8_t y ) {
-  printBuffer(disp, x, y, 30, 60, bufS);
-}
-
-void oledclockUpdate(void) {
-  /* Print clock buffer to oled screen */
-  display.clearDisplay();
-  printHourBuffer(&display, 63, 31);
-  printMinuteBuffer(&display, 63, 31);
-  printSecondBuffer(&display, 63, 31);
-  display.display();
-}
-
 ISR(TIMER2_OVF_vect) {
   if (outBufReady) {
     leduhrSendOutBuf();
@@ -164,11 +116,6 @@ void setup() {
 
   /* Setup for real Leduhr output */
   leduhrInitHardware();
-
-  /* Setup for OLED output */
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  display.clearDisplay();
-  display.display();
 }
 
 void clearBufH(void) {
@@ -204,41 +151,76 @@ void loop() {
   uint32_t second = clock.getSeconds();
 
   /* Update seconds */
+  static uint8_t playSecondAnimation = 0;
+  static uint32_t secondAnimationStartMillis = 0;
   if (lastSecond != second) {
-    for (uint8_t i = 0; i <= 60; i++) {
-      uint32_t sec = second + i;
-      while (sec > 59) sec -= 60;
-      clearBufS();
-      bufS[sec/8] = 1 << sec%8;
-      leduhrUpdate();
-      delay(5);
-    }
+    playSecondAnimation = 1;
+    secondAnimationStartMillis = actmillis;
+  }
+  if (playSecondAnimation) {
+    uint32_t i = (actmillis - secondAnimationStartMillis) / 6;
+    uint32_t sec = second + i;
+    while (sec > 59) sec -= 60;
+    clearBufS();
+    bufS[sec/8] = 1 << sec%8;
+    if (i >= 60) playSecondAnimation = 0;
   }
   
   /* Update minutes */
+  static uint8_t playMinAnimation = 0;
+  static uint32_t minAnimationStartMillis = 0;
   if (lastMinute != minute) {
-    for (uint8_t i = 0; i <= 60; i++) {
+    playMinAnimation = 1;
+    minAnimationStartMillis = actmillis;
+  }
+  if (playMinAnimation) {
+    if (playSecondAnimation) {
+      minAnimationStartMillis = actmillis;
+    } else {
+      uint32_t i = (actmillis - minAnimationStartMillis) / 8;
       uint32_t min = minute + i;
       while (min > 59) min -= 60;
       clearBufM();
       bufM[min/8] = 1 << min%8;
-      leduhrUpdate();
-      delay(5);
+      if (i >= 60) playMinAnimation = 0;
     }
   }
 
   /* Update hours */
+  static uint8_t playHouAnimation = 0;
+  static uint32_t houAnimationStartMillis = 0;
   if (lastHour != hour) {
-    clearBufH();
-    bufH[hour/8] = 1 << hour%8;
-    leduhrUpdate();
+    playHouAnimation = 1;
+    houAnimationStartMillis = actmillis;
+  }
+  if (playHouAnimation) {
+    if (playMinAnimation) {
+      houAnimationStartMillis = actmillis;
+    } else {
+      uint32_t i = (actmillis - houAnimationStartMillis) / 80;
+      clearBufH();
+      if (i < 11) {
+        for (int8_t j = 0; j < i+1; j++) {
+          int8_t hou = hour - 1 - j;
+          while (hou < 0) hou += 12;
+          bufH[hou/8] |= 1 << hou%8;
+        }
+      } else {
+        for (int8_t j = 0; j < 22 - i; j++) {
+          int8_t hou = hour + j;
+          while (hou > 11) hou -= 12;
+          bufH[hou/8] |= 1 << hou%8;
+        }
+      }
+      if (i >= 21) playHouAnimation = 0;
+    }
   }
   
+  leduhrUpdate();
+
   lastSecond = second;
   lastMinute = minute;
   lastHour = hour;
 
-  oledclockUpdate(); // oled ist zu langsam fuer so krasse animationen
 
-  delay(1); // just some delay ja ja
 }
